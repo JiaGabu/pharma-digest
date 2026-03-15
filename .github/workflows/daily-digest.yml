@@ -30,6 +30,11 @@ jobs:
           echo "$GMAIL_CREDENTIALS" > credentials.json
           echo "$GMAIL_TOKEN" > token.json
 
+      - name: Configure git for marker push
+        run: |
+          git config user.name "pharma-digest-bot"
+          git config user.email "pharma-digest-bot@users.noreply.github.com"
+
       - name: Run digest
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

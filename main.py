@@ -17,6 +17,7 @@ from config.settings import RECIPIENT_EMAIL, RSS_FEEDS
 from src.fetcher import fetch_all_feeds
 from src.formatter import format_email
 from src.gmail_sender import send_email
+from src.run_guard import already_sent_today, mark_sent_today
 from src.scorer import score_articles
 from src.selector import select_articles
 
@@ -38,6 +39,10 @@ def main():
     setup_logging()
     logger = logging.getLogger(__name__)
     logger.info("=== Pharma Digest starting ===")
+
+    # 0. Skip if already sent today (prevents duplicate from launchd + GitHub Actions)
+    if already_sent_today():
+        return
 
     # 1. Fetch articles from the last 24 hours
     articles = fetch_all_feeds(RSS_FEEDS)
@@ -63,6 +68,9 @@ def main():
     # 5. Send via Gmail
     send_email(subject, html_body, RECIPIENT_EMAIL)
     logger.info("=== Pharma Digest completed successfully ===")
+
+    # 6. Write marker so the other runner (launchd / GitHub Actions) skips today
+    mark_sent_today()
 
 
 if __name__ == "__main__":
