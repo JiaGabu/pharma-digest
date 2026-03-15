@@ -20,7 +20,6 @@ STOPWORDS = {
 
 
 def _normalize_title(title: str) -> set[str]:
-    """Lowercase, remove punctuation, remove stopwords, return word set."""
     words = re.sub(r"[^a-z0-9\s]", " ", title.lower()).split()
     return {w for w in words if w not in STOPWORDS and len(w) > 2}
 
@@ -34,10 +33,6 @@ def _jaccard(set_a: set, set_b: set) -> float:
 
 
 def _detect_multi_source_events(articles: list[dict]) -> list[list[dict]]:
-    """
-    Group articles covering the same event (Jaccard > 0.3 on title keywords,
-    from different sources). Returns groups of 2+ articles.
-    """
     normalized = [_normalize_title(a["title"]) for a in articles]
     visited = [False] * len(articles)
     groups = []
@@ -61,87 +56,112 @@ def _detect_multi_source_events(articles: list[dict]) -> list[list[dict]]:
     return groups
 
 
+def _info_score(article: dict) -> float:
+    """
+    Score information richness by counting specific facts rather than raw length.
+    Looks for: dollar amounts, percentages, phase numbers, p-values, trial IDs,
+    regulatory terms, and numeric milestones.
+    """
+    text = " ".join([
+        article.get("title", ""),
+        article.get("summary", ""),
+        article.get("one_line_summary", ""),
+    ])
+    specifics = re.findall(
+        r'\$[\d.,]+\s*(?:[MBK]|million|billion)?'   # dollar amounts
+        r'|[\d.]+\s*(?:%|percent)'                   # percentages
+        r'|[Pp]hase\s*[0-9I-V]+'                     # clinical phases
+        r'|[Pp]\s*[<>=]\s*0\.[\d]+'                  # p-values
+        r'|\b(?:FDA|EMA|NDA|BLA|sNDA|sBLA|PDUFA|IND|AdCom|CRL)\b'  # regulatory
+        r'|\b\d{4}\b'                                # specific years
+        r'|\b\d+\s*(?:mg|mg/kg|mcg|kg)\b',          # dosing details
+        text,
+    )
+    # Secondary: normalized summary length (caps at 1.0 for summaries ≥500 chars)
+    length_bonus = min(len(article.get("summary", "")) / 500, 1.0)
+    return len(specifics) * 2 + length_bonus
+
+
 def _best_in_group(group: list[dict]) -> dict:
-    """Pick the most information-rich article (longest summary as proxy)."""
-    return max(group, key=lambda a: len(a.get("summary", "")))
+    """Pick the most information-rich article using fact density, not raw length."""
+    return max(group, key=_info_score)
 
 
 def select_articles(scored: list[dict]) -> list[dict]:
     """
     Select up to 8 articles according to quotas and rules:
-    1. Force-include articles covered by MULTI_SOURCE_THRESHOLD+ distinct sources.
-    2. Fill remaining slots per category from highest-scoring eligible articles.
-    3. If a category has fewer eligible articles than its quota, fill vacant
-       slots with highest-scoring unused articles from other categories.
+    1. Detect similar-topic groups; for each group keep only the most info-rich article
+       and exclude all others from selection (those slots go to backfill).
+    2. For groups covered by 3+ distinct sources, force-include the best article.
+    3. Fill each category quota with: priority candidates first, then highest-scoring eligible.
+    4. Strictly respect quotas — never exceed per-category limits.
+    5. If a category has fewer eligible articles than its quota, backfill from other categories.
     """
-    # --- Step 1: Detect multi-source events ---
+    # --- Step 1: Deduplicate similar-topic articles across all groups ---
     event_groups = _detect_multi_source_events(scored)
-    forced_ids = set()
-    forced_articles = []
+    priority_ids = set()
+    excluded_ids: set[str] = set()
 
     for group in event_groups:
+        best = _best_in_group(group)
         distinct_sources = {a["source"] for a in group}
-        if len(distinct_sources) >= MULTI_SOURCE_THRESHOLD:
-            best = _best_in_group(group)
-            if best["id"] not in forced_ids:
-                forced_ids.add(best["id"])
-                forced_articles.append(best)
+
+        # Exclude every non-best article in this group from selection
+        for article in group:
+            if article["id"] != best["id"]:
+                excluded_ids.add(article["id"])
                 logger.info(
-                    f"[FORCED] {len(distinct_sources)} sources: {best['title'][:60]}"
+                    f"[DEDUP] Excluded duplicate: {article['title'][:60]} "
+                    f"(kept: {best['title'][:60]})"
                 )
 
-    # --- Step 2: Bucket remaining eligible articles by category ---
-    # Eligible = passes threshold and not already forced
+        # Force-include best if 3+ distinct sources cover the same event
+        if len(distinct_sources) >= MULTI_SOURCE_THRESHOLD:
+            priority_ids.add(best["id"])
+            logger.info(
+                f"[PRIORITY] {len(distinct_sources)} sources → {best['title'][:60]}"
+            )
+
+    # --- Step 2: Bucket eligible articles by category (excluding duplicates) ---
     buckets: dict[str, list[dict]] = defaultdict(list)
     for article in scored:
-        if article["id"] in forced_ids:
+        if article["id"] in excluded_ids:
             continue
         threshold = PASS_THRESHOLDS.get(article["category"], 999)
         if article["total_score"] >= threshold:
             buckets[article["category"]].append(article)
 
+    # Sort each bucket: priority articles first, then by score descending
     for cat in buckets:
-        buckets[cat].sort(key=lambda a: a["total_score"], reverse=True)
+        buckets[cat].sort(
+            key=lambda a: (a["id"] in priority_ids, a["total_score"]),
+            reverse=True
+        )
 
-    # --- Step 3: Count forced articles against category quotas ---
-    quotas = dict(CATEGORY_QUOTAS)
+    # --- Step 3: Fill per-category quotas strictly ---
     selected = []
+    selected_ids = set()
+    quotas = dict(CATEGORY_QUOTAS)
 
-    # Place forced articles into their category quota first
-    for article in forced_articles:
-        cat = article["category"]
-        if quotas.get(cat, 0) > 0:
-            selected.append(article)
-            quotas[cat] -= 1
-        else:
-            # Forced but quota full — still include (override quota slightly)
-            selected.append(article)
-            logger.info(f"[FORCED OVERRIDE] quota full for {cat}, still including")
-
-    # --- Step 4: Fill per-category quotas ---
-    unfilled_slots = []
     for cat in CATEGORY_ORDER:
-        remaining = quotas.get(cat, 0)
+        quota = quotas.get(cat, 0)
         pool = buckets.get(cat, [])
         taken = 0
         for article in pool:
-            if remaining <= 0:
+            if taken >= quota:
                 break
-            if article["id"] not in {a["id"] for a in selected}:
+            if article["id"] not in selected_ids:
                 selected.append(article)
-                remaining -= 1
+                selected_ids.add(article["id"])
                 taken += 1
-        # Track unfilled slots (category + count)
-        if remaining > 0:
-            unfilled_slots.append((cat, remaining))
-            logger.info(f"Category '{cat}' has {remaining} unfilled slot(s)")
+        if taken < quota:
+            logger.info(f"Category '{cat}' filled {taken}/{quota} slots")
 
-    # --- Step 5: Fill vacant slots from other categories ---
-    if unfilled_slots:
-        total_vacant = sum(n for _, n in unfilled_slots)
-        selected_ids = {a["id"] for a in selected}
+    # --- Step 4: Backfill vacant slots from other categories ---
+    total_target = sum(CATEGORY_QUOTAS.values())
+    vacant = total_target - len(selected)
 
-        # Gather all remaining eligible articles not yet selected, sorted by score
+    if vacant > 0:
         all_remaining = []
         for cat, pool in buckets.items():
             for article in pool:
@@ -150,10 +170,11 @@ def select_articles(scored: list[dict]) -> list[dict]:
         all_remaining.sort(key=lambda a: a["total_score"], reverse=True)
 
         for article in all_remaining:
-            if total_vacant <= 0:
+            if vacant <= 0:
                 break
             selected.append(article)
-            total_vacant -= 1
+            selected_ids.add(article["id"])
+            vacant -= 1
             logger.info(
                 f"[BACKFILL] {article['category']} → {article['title'][:60]} "
                 f"(score {article['total_score']})"
