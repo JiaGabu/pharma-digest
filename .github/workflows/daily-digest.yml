@@ -1,19 +1,25 @@
 name: Daily Pharma Digest
 
+# ─────────────────────────────────────────────
+# Schedule: 23:00 UTC = 07:00 Taipei (UTC+8)
+# run_guard uses Google Drive state to prevent
+# duplicate sends if launchd already ran first.
+# ─────────────────────────────────────────────
 on:
   schedule:
-    - cron: "0 23 * * *"   # 23:00 UTC = 07:00 Taipei (UTC+8)
-  workflow_dispatch:         # allow manual trigger from GitHub UI
+    - cron: "0 23 * * *"
+  workflow_dispatch:          # manual trigger from GitHub UI
 
 jobs:
   send-digest:
     runs-on: ubuntu-latest
+    timeout-minutes: 15       # kill job if it hangs
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -22,20 +28,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Write credentials and token
+      # Secrets are stored as base64 to safely encode multi-line JSON.
+      # Decode them back to files before running main.py.
+      - name: Restore credentials from secrets
         env:
           GMAIL_CREDENTIALS: ${{ secrets.GMAIL_CREDENTIALS }}
           GMAIL_TOKEN: ${{ secrets.GMAIL_TOKEN }}
         run: |
-          echo "$GMAIL_CREDENTIALS" > credentials.json
-          echo "$GMAIL_TOKEN" > token.json
+          echo "$GMAIL_CREDENTIALS" | base64 --decode > credentials.json
+          echo "$GMAIL_TOKEN"       | base64 --decode > token.json
 
-      - name: Configure git for marker push
-        run: |
-          git config user.name "pharma-digest-bot"
-          git config user.email "pharma-digest-bot@users.noreply.github.com"
-
-      - name: Run digest
+      - name: Run daily digest
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main.py
+
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-log-${{ github.run_id }}
+          path: logs/app.log
+          retention-days: 7
