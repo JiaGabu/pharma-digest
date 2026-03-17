@@ -13,27 +13,60 @@ from config.settings import CREDENTIALS_FILE, TOKEN_FILE
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 
-def _get_service():
+def _restore_credential_files() -> None:
+    """Decode Base64 env vars to credential files when running in CI.
+
+    In GitHub Actions the files don't exist on disk; instead the secrets
+    GMAIL_CREDENTIALS and GMAIL_TOKEN are injected as Base64 env vars.
+    This function writes them to the paths expected by the OAuth library
+    so the rest of the code works identically in both local and CI runs.
+
+    Local runs are unaffected: if the files already exist, this is a no-op.
+    """
+    for filepath, env_var in (
+        (CREDENTIALS_FILE, "GMAIL_CREDENTIALS"),
+        (TOKEN_FILE, "GMAIL_TOKEN"),
+    ):
+        if not os.path.exists(filepath):
+            encoded = os.environ.get(env_var, "")
+            if encoded:
+                with open(filepath, "wb") as fh:
+                    fh.write(base64.b64decode(encoded))
+                logger.info(f"Restored {filepath} from ${env_var} env var")
+
+
+def get_credentials() -> Credentials:
+    # Write files from env vars if we're running in CI without local files.
+    _restore_credential_files()
+
     creds = None
-
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            logger.info("OAuth token refreshed successfully.")
         else:
+            # Interactive browser flow — only works in a local environment.
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
 
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
-        logger.info("OAuth token saved to token.json")
+        with open(TOKEN_FILE, "w") as fh:
+            fh.write(creds.to_json())
+        logger.info("OAuth token written to token.json")
 
-    return build("gmail", "v1", credentials=creds)
+    return creds
+
+
+def _get_service():
+    return build("gmail", "v1", credentials=get_credentials())
 
 
 def send_email(subject: str, html_body: str, recipient: str) -> None:

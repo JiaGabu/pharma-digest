@@ -1,6 +1,7 @@
 feedparser
-google-generativeai
+google-genai>=1.0
 google-auth-oauthlib
 google-auth-httplib2
 google-api-python-client
 python-dotenv
+numpy

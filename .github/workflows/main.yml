@@ -1,0 +1,68 @@
+name: Daily Pharma Digest
+
+# ──────────────────────────────────────────────────────────────
+# Trigger: 23:00 UTC every day = 07:00 Taipei Time (UTC+8)
+#
+# Secrets required (Settings → Secrets and variables → Actions):
+#   GEMINI_API_KEY     — raw Gemini API key string
+#   GMAIL_CREDENTIALS  — base64(credentials.json)
+#   GMAIL_TOKEN        — base64(token.json)
+#
+# Duplicate-send protection:
+#   run_guard.py writes the send date to Google Drive.
+#   If launchd already ran at 07:10 Taipei, this job reads
+#   the Drive state and exits cleanly without sending again.
+# ──────────────────────────────────────────────────────────────
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 23:00 UTC = 07:00 Taipei
+  workflow_dispatch:        # enable manual "補跑" from GitHub UI
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── Decode Base64 secrets → credential files ──────────────
+      # The Python code (gmail_sender._restore_credential_files)
+      # also handles this automatically, but writing the files here
+      # first gives a clear failure point if a secret is missing.
+      - name: Restore credential files from secrets
+        env:
+          GMAIL_CREDENTIALS: ${{ secrets.GMAIL_CREDENTIALS }}
+          GMAIL_TOKEN: ${{ secrets.GMAIL_TOKEN }}
+        run: |
+          echo "$GMAIL_CREDENTIALS" | base64 --decode > credentials.json
+          echo "$GMAIL_TOKEN"       | base64 --decode > token.json
+
+      # ── Run the digest ─────────────────────────────────────────
+      - name: Run daily digest
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Pass secrets as env vars too — gmail_sender.py uses these
+          # as a fallback if the .json files are not on disk.
+          GMAIL_CREDENTIALS: ${{ secrets.GMAIL_CREDENTIALS }}
+          GMAIL_TOKEN: ${{ secrets.GMAIL_TOKEN }}
+        run: python main.py
+
+      # ── Upload app.log as artifact on failure ──────────────────
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-log-${{ github.run_id }}
+          path: logs/app.log
+          retention-days: 7
