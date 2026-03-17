@@ -1,39 +1,66 @@
 import logging
+import os
 import re
 from collections import defaultdict
+
+import numpy as np
+from google import genai
 
 from config.settings import (
     CATEGORY_ORDER,
     CATEGORY_QUOTAS,
     MULTI_SOURCE_THRESHOLD,
-    PASS_THRESHOLDS,
 )
 
 logger = logging.getLogger(__name__)
 
-STOPWORDS = {
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-    "has", "have", "had", "will", "its", "it", "as", "up", "new", "says",
-    "said", "after", "over", "about", "that", "this", "their",
-}
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    a, b = np.array(a), np.array(b)
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    return float(np.dot(a, b) / denom) if denom > 1e-10 else 0.0
 
 
-def _normalize_title(title: str) -> set[str]:
-    words = re.sub(r"[^a-z0-9\s]", " ", title.lower()).split()
-    return {w for w in words if w not in STOPWORDS and len(w) > 2}
+def _embed_articles(articles: list[dict], client: genai.Client) -> list[list[float]]:
+    """Embed each article title+summary using gemini-embedding-001 (v1beta compatible)."""
+    texts = [f"{a['title']} {a.get('summary', '')}" for a in articles]
+    results = []
+    for text in texts:
+        response = client.models.embed_content(model="gemini-embedding-001", contents=text)
+        results.append(response.embeddings[0].values)
+    return results
 
 
-def _jaccard(set_a: set, set_b: set) -> float:
-    if not set_a or not set_b:
-        return 0.0
-    intersection = len(set_a & set_b)
-    union = len(set_a | set_b)
-    return intersection / union if union > 0 else 0.0
+def _info_score(article: dict) -> float:
+    """Score information richness by counting specific facts."""
+    text = " ".join([
+        article.get("title", ""),
+        article.get("summary", ""),
+        article.get("strategic_implication", ""),
+    ])
+    specifics = re.findall(
+        r'\$[\d.,]+\s*(?:[MBK]|million|billion)?'
+        r'|[\d.]+\s*(?:%|percent)'
+        r'|[Pp]hase\s*[0-9I-V]+'
+        r'|[Pp]\s*[<>=]\s*0\.[\d]+'
+        r'|\b(?:FDA|EMA|NDA|BLA|sNDA|sBLA|PDUFA|IND|AdCom|CRL)\b'
+        r'|\b\d{4}\b'
+        r'|\b\d+\s*(?:mg|mg/kg|mcg|kg)\b',
+        text,
+    )
+    length_bonus = min(len(article.get("summary", "")) / 500, 1.0)
+    return len(specifics) * 2 + length_bonus
 
 
-def _detect_multi_source_events(articles: list[dict]) -> list[list[dict]]:
-    normalized = [_normalize_title(a["title"]) for a in articles]
+def _best_in_group(group: list[dict]) -> dict:
+    return max(group, key=_info_score)
+
+
+def _detect_multi_source_events(articles: list[dict], client: genai.Client) -> list[list[dict]]:
+    if not articles:
+        return []
+
+    embeddings = _embed_articles(articles, client)
     visited = [False] * len(articles)
     groups = []
 
@@ -47,7 +74,7 @@ def _detect_multi_source_events(articles: list[dict]) -> list[list[dict]]:
                 continue
             if articles[j]["source"] == articles[i]["source"]:
                 continue
-            if _jaccard(normalized[i], normalized[j]) >= 0.3:
+            if _cosine(embeddings[i], embeddings[j]) >= 0.85:
                 group.append(articles[j])
                 visited[j] = True
         if len(group) > 1:
@@ -56,49 +83,23 @@ def _detect_multi_source_events(articles: list[dict]) -> list[list[dict]]:
     return groups
 
 
-def _info_score(article: dict) -> float:
-    """
-    Score information richness by counting specific facts rather than raw length.
-    Looks for: dollar amounts, percentages, phase numbers, p-values, trial IDs,
-    regulatory terms, and numeric milestones.
-    """
-    text = " ".join([
-        article.get("title", ""),
-        article.get("summary", ""),
-        article.get("one_line_summary", ""),
-    ])
-    specifics = re.findall(
-        r'\$[\d.,]+\s*(?:[MBK]|million|billion)?'   # dollar amounts
-        r'|[\d.]+\s*(?:%|percent)'                   # percentages
-        r'|[Pp]hase\s*[0-9I-V]+'                     # clinical phases
-        r'|[Pp]\s*[<>=]\s*0\.[\d]+'                  # p-values
-        r'|\b(?:FDA|EMA|NDA|BLA|sNDA|sBLA|PDUFA|IND|AdCom|CRL)\b'  # regulatory
-        r'|\b\d{4}\b'                                # specific years
-        r'|\b\d+\s*(?:mg|mg/kg|mcg|kg)\b',          # dosing details
-        text,
-    )
-    # Secondary: normalized summary length (caps at 1.0 for summaries ≥500 chars)
-    length_bonus = min(len(article.get("summary", "")) / 500, 1.0)
-    return len(specifics) * 2 + length_bonus
-
-
-def _best_in_group(group: list[dict]) -> dict:
-    """Pick the most information-rich article using fact density, not raw length."""
-    return max(group, key=_info_score)
-
-
 def select_articles(scored: list[dict]) -> list[dict]:
     """
-    Select up to 8 articles according to quotas and rules:
-    1. Detect similar-topic groups; for each group keep only the most info-rich article
-       and exclude all others from selection (those slots go to backfill).
-    2. For groups covered by 3+ distinct sources, force-include the best article.
-    3. Fill each category quota with: priority candidates first, then highest-scoring eligible.
-    4. Strictly respect quotas — never exceed per-category limits.
-    5. If a category has fewer eligible articles than its quota, backfill from other categories.
+    Select up to 9 articles according to quotas and deduplication rules:
+    1. Embed all articles; group semantically identical articles across sources.
+    2. For each group keep only the most info-rich article; exclude the rest.
+    3. Groups covered by 3+ distinct sources force-include the best article.
+    4. Fill per-category quotas by score descending; backfill vacant slots.
     """
-    # --- Step 1: Deduplicate similar-topic articles across all groups ---
-    event_groups = _detect_multi_source_events(scored)
+    if not scored:
+        logger.warning("No scored articles available for selection.")
+        return []
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
+
+    # --- Step 1: Semantic deduplication ---
+    event_groups = _detect_multi_source_events(scored, client)
     priority_ids = set()
     excluded_ids: set[str] = set()
 
@@ -106,7 +107,6 @@ def select_articles(scored: list[dict]) -> list[dict]:
         best = _best_in_group(group)
         distinct_sources = {a["source"] for a in group}
 
-        # Exclude every non-best article in this group from selection
         for article in group:
             if article["id"] != best["id"]:
                 excluded_ids.add(article["id"])
@@ -115,39 +115,34 @@ def select_articles(scored: list[dict]) -> list[dict]:
                     f"(kept: {best['title'][:60]})"
                 )
 
-        # Force-include best if 3+ distinct sources cover the same event
         if len(distinct_sources) >= MULTI_SOURCE_THRESHOLD:
             priority_ids.add(best["id"])
-            logger.info(
-                f"[PRIORITY] {len(distinct_sources)} sources → {best['title'][:60]}"
-            )
+            logger.info(f"[PRIORITY] {len(distinct_sources)} sources → {best['title'][:60]}")
 
-    # --- Step 2: Bucket eligible articles by category (excluding duplicates) ---
+    # --- Step 2: Bucket by category ---
     buckets: dict[str, list[dict]] = defaultdict(list)
     for article in scored:
-        if article["id"] in excluded_ids:
-            continue
-        threshold = PASS_THRESHOLDS.get(article["category"], 999)
-        if article["total_score"] >= threshold:
+        if article["id"] not in excluded_ids:
             buckets[article["category"]].append(article)
 
-    # Sort each bucket: priority articles first, then by score descending
+    if not buckets:
+        logger.warning("All articles excluded after deduplication.")
+        return []
+
     for cat in buckets:
         buckets[cat].sort(
-            key=lambda a: (a["id"] in priority_ids, a["total_score"]),
-            reverse=True
+            key=lambda a: (a["id"] in priority_ids, a["score"]),
+            reverse=True,
         )
 
-    # --- Step 3: Fill per-category quotas strictly ---
+    # --- Step 3: Fill per-category quotas ---
     selected = []
     selected_ids = set()
-    quotas = dict(CATEGORY_QUOTAS)
 
     for cat in CATEGORY_ORDER:
-        quota = quotas.get(cat, 0)
-        pool = buckets.get(cat, [])
+        quota = CATEGORY_QUOTAS.get(cat, 0)
         taken = 0
-        for article in pool:
+        for article in buckets.get(cat, []):
             if taken >= quota:
                 break
             if article["id"] not in selected_ids:
@@ -157,18 +152,16 @@ def select_articles(scored: list[dict]) -> list[dict]:
         if taken < quota:
             logger.info(f"Category '{cat}' filled {taken}/{quota} slots")
 
-    # --- Step 4: Backfill vacant slots from other categories ---
+    # --- Step 4: Backfill vacant slots ---
     total_target = sum(CATEGORY_QUOTAS.values())
     vacant = total_target - len(selected)
 
     if vacant > 0:
-        all_remaining = []
-        for cat, pool in buckets.items():
-            for article in pool:
-                if article["id"] not in selected_ids:
-                    all_remaining.append(article)
-        all_remaining.sort(key=lambda a: a["total_score"], reverse=True)
-
+        all_remaining = [
+            a for pool in buckets.values()
+            for a in pool if a["id"] not in selected_ids
+        ]
+        all_remaining.sort(key=lambda a: a["score"], reverse=True)
         for article in all_remaining:
             if vacant <= 0:
                 break
@@ -177,7 +170,7 @@ def select_articles(scored: list[dict]) -> list[dict]:
             vacant -= 1
             logger.info(
                 f"[BACKFILL] {article['category']} → {article['title'][:60]} "
-                f"(score {article['total_score']})"
+                f"(score {article['score']})"
             )
 
     logger.info(f"Final selection: {len(selected)} articles")
