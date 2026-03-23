@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import re
+import socket
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
@@ -81,7 +82,10 @@ def fetch_all_feeds(feed_urls: list[str]) -> list[dict]:
 
     for url in feed_urls:
         try:
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(30)
             feed = feedparser.parse(url, request_headers={"User-Agent": "Mozilla/5.0"})
+            socket.setdefaulttimeout(old_timeout)
             source_name = feed.feed.get("title", url)
             logger.info(f"Fetched {len(feed.entries)} entries from {source_name}")
 

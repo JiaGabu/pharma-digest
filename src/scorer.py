@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 from google import genai
 
@@ -100,36 +100,43 @@ def score_articles(articles: list[dict]) -> list[dict]:
     if not api_key:
         raise ValueError("GEMINI_API_KEY not set in environment")
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=api_key, http_options={"timeout": 60})
 
     def score_one(idx_article):
         idx, article = idx_article
         result = _call_gemini(article["title"], article["summary"], client)
         return idx, article, result
 
+    total_timeout = max(300, len(articles) * 15)
     scored_map = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
             executor.submit(score_one, (i, a)): i
             for i, a in enumerate(articles)
         }
-        for future in as_completed(futures):
-            idx, article, result = future.result()
-            logger.info(f"Scored [{idx + 1}/{len(articles)}]: {article['title'][:70]}")
-            if result is None:
-                logger.warning(f"Skipping article (scoring failed): {article['title'][:60]}")
-                continue
-            category = result.get("category", "Other")
-            score = result.get("score", 0)
-            if category == "Other" or score == 0:
-                continue
-            scored_map[idx] = {
-                **article,
-                "category": category,
-                "score": score,
-                "strategic_implication": result.get("strategic_implication", ""),
-                "reasoning": result.get("reasoning", ""),
-            }
+        try:
+            for future in as_completed(futures, timeout=total_timeout):
+                idx, article, result = future.result()
+                logger.info(f"Scored [{idx + 1}/{len(articles)}]: {article['title'][:70]}")
+                if result is None:
+                    logger.warning(f"Skipping article (scoring failed): {article['title'][:60]}")
+                    continue
+                category = result.get("category", "Other")
+                score = result.get("score", 0)
+                if category == "Other" or score == 0:
+                    continue
+                scored_map[idx] = {
+                    **article,
+                    "category": category,
+                    "score": score,
+                    "strategic_implication": result.get("strategic_implication", ""),
+                    "reasoning": result.get("reasoning", ""),
+                }
+        except FuturesTimeoutError:
+            logger.error(
+                f"Scoring timed out after {total_timeout}s; "
+                f"proceeding with {len(scored_map)} scored articles so far."
+            )
 
     scored = [scored_map[i] for i in sorted(scored_map)]
     logger.info(f"Scored {len(scored)} eligible articles out of {len(articles)}")

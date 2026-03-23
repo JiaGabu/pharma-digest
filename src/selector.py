@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 import numpy as np
 from google import genai
@@ -22,13 +23,32 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def _embed_articles(articles: list[dict], client: genai.Client) -> list[list[float]]:
-    """Embed each article title+summary using gemini-embedding-001 (v1beta compatible)."""
+    """Embed each article title+summary using gemini-embedding-001, in parallel with timeout."""
     texts = [f"{a['title']} {a.get('summary', '')}" for a in articles]
-    results = []
-    for text in texts:
+    results = [None] * len(texts)
+
+    def embed_one(idx_text):
+        idx, text = idx_text
         response = client.models.embed_content(model="gemini-embedding-001", contents=text)
-        results.append(response.embeddings[0].values)
-    return results
+        return idx, response.embeddings[0].values
+
+    timeout = max(120, len(texts) * 5)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(embed_one, (i, t)): i for i, t in enumerate(texts)}
+        try:
+            for future in as_completed(futures, timeout=timeout):
+                idx, vec = future.result()
+                results[idx] = vec
+        except FuturesTimeoutError:
+            logger.warning(f"Embedding timed out after {timeout}s; some articles may be skipped.")
+
+    # Filter out articles whose embedding failed (None)
+    valid = [(a, v) for a, v in zip(articles, results) if v is not None]
+    if len(valid) < len(articles):
+        logger.warning(f"Embedding failed for {len(articles) - len(valid)} articles; excluded from dedup.")
+    articles_out = [a for a, _ in valid]
+    vectors_out = [v for _, v in valid]
+    return articles_out, vectors_out
 
 
 def _info_score(article: dict) -> float:
@@ -60,7 +80,9 @@ def _detect_multi_source_events(articles: list[dict], client: genai.Client) -> l
     if not articles:
         return []
 
-    embeddings = _embed_articles(articles, client)
+    articles, embeddings = _embed_articles(articles, client)
+    if not articles:
+        return []
     visited = [False] * len(articles)
     groups = []
 
@@ -96,7 +118,7 @@ def select_articles(scored: list[dict]) -> list[dict]:
         return []
 
     api_key = os.environ.get("GEMINI_API_KEY")
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=api_key, http_options={"timeout": 60})
 
     # --- Step 1: Semantic deduplication ---
     event_groups = _detect_multi_source_events(scored, client)
