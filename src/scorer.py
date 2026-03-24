@@ -100,7 +100,7 @@ def score_articles(articles: list[dict]) -> list[dict]:
     if not api_key:
         raise ValueError("GEMINI_API_KEY not set in environment")
 
-    client = genai.Client(api_key=api_key, http_options={"timeout": 60})
+    client = genai.Client(api_key=api_key)
 
     def score_one(idx_article):
         idx, article = idx_article

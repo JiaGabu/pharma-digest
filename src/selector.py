@@ -121,7 +121,7 @@ def select_articles(scored: list[dict]) -> list[dict]:
         return []
 
     api_key = os.environ.get("GEMINI_API_KEY")
-    client = genai.Client(api_key=api_key, http_options={"timeout": 60})
+    client = genai.Client(api_key=api_key)
 
     # --- Step 1: Semantic deduplication ---
     event_groups = _detect_multi_source_events(scored, client)
