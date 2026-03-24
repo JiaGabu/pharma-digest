@@ -1,7 +1,6 @@
 import hashlib
 import logging
 import re
-import socket
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
@@ -56,7 +55,8 @@ def fetch_images(articles: list[dict]) -> None:
         if not article.get("image_url") and article.get("link"):
             article["image_url"] = _og_image(article["link"])
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    executor = ThreadPoolExecutor(max_workers=8)
+    try:
         futures = {executor.submit(fetch_one, a): a for a in articles}
         try:
             for future in as_completed(futures, timeout=_IMAGE_TOTAL_TIMEOUT):
@@ -69,85 +69,106 @@ def fetch_images(articles: list[dict]) -> None:
                 f"Image fetching exceeded {_IMAGE_TOTAL_TIMEOUT}s total budget; "
                 "proceeding without remaining images."
             )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _fetch_feed(url: str) -> feedparser.FeedParserDict:
+    """Fetch a single RSS feed via urllib (thread-safe 30s timeout)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+    return feedparser.parse(raw)
 
 
 def fetch_all_feeds(feed_urls: list[str]) -> list[dict]:
     """
-    Fetch articles from all RSS feeds published within the last FETCH_HOURS hours.
-    Deduplicates by URL. Returns a list of article dicts.
+    Fetch articles from all RSS feeds in parallel, published within the last
+    FETCH_HOURS hours. Deduplicates by URL. Returns a list of article dicts.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=FETCH_HOURS)
+
+    # --- Parallel feed fetching ---
+    feed_results: dict[str, feedparser.FeedParserDict] = {}
+    executor = ThreadPoolExecutor(max_workers=len(feed_urls))
+    try:
+        futures = {executor.submit(_fetch_feed, url): url for url in feed_urls}
+        try:
+            for future in as_completed(futures, timeout=60):
+                url = futures[future]
+                try:
+                    feed_results[url] = future.result()
+                except Exception as e:
+                    logger.error(f"Failed to fetch feed {url}: {e}")
+        except FuturesTimeoutError:
+            logger.warning("Feed fetching timed out after 60s; proceeding with partial results.")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    # --- Parse entries in original order for deterministic deduplication ---
     articles = []
-    seen_urls = set()
+    seen_urls: set[str] = set()
 
     for url in feed_urls:
-        try:
-            old_timeout = socket.getdefaulttimeout()
-            socket.setdefaulttimeout(30)
-            try:
-                feed = feedparser.parse(url, request_headers={"User-Agent": "Mozilla/5.0"})
-            finally:
-                socket.setdefaulttimeout(old_timeout)
-            source_name = feed.feed.get("title", url)
-            logger.info(f"Fetched {len(feed.entries)} entries from {source_name}")
+        feed = feed_results.get(url)
+        if feed is None:
+            continue
+        source_name = feed.feed.get("title", url)
+        logger.info(f"Fetched {len(feed.entries)} entries from {source_name}")
 
-            for entry in feed.entries:
-                link = entry.get("link", "").strip()
-                title = entry.get("title", "").strip()
+        for entry in feed.entries:
+            link = entry.get("link", "").strip()
+            title = entry.get("title", "").strip()
 
-                if not title:
-                    continue
-                if link and link in seen_urls:
-                    continue
+            if not title:
+                continue
+            if link and link in seen_urls:
+                continue
 
-                # Parse pubDate
-                pub_date = None
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    try:
-                        pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                    except Exception:
-                        pass
-                if pub_date is None and hasattr(entry, "updated_parsed") and entry.updated_parsed:
-                    try:
-                        pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
-                    except Exception:
-                        pass
+            # Parse pubDate
+            pub_date = None
+            if hasattr(entry, "published_parsed") and entry.published_parsed:
+                try:
+                    pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                except Exception:
+                    pass
+            if pub_date is None and hasattr(entry, "updated_parsed") and entry.updated_parsed:
+                try:
+                    pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
+                except Exception:
+                    pass
 
-                # Only include articles within the last FETCH_HOURS (skip if no date)
-                if pub_date is None:
-                    logger.debug(f"Skipping article with no pubDate: {title[:60]}")
-                    continue
-                if pub_date < cutoff:
-                    continue
+            if pub_date is None:
+                logger.debug(f"Skipping article with no pubDate: {title[:60]}")
+                continue
+            if pub_date < cutoff:
+                continue
 
-                if link:
-                    seen_urls.add(link)
+            if link:
+                seen_urls.add(link)
 
-                article_id = (
-                    hashlib.md5(link.encode()).hexdigest()
-                    if link
-                    else hashlib.md5(title.encode()).hexdigest()
-                )
+            article_id = (
+                hashlib.md5(link.encode()).hexdigest()
+                if link
+                else hashlib.md5(title.encode()).hexdigest()
+            )
 
-                summary = entry.get("summary", entry.get("description", "")).strip()
-                summary = re.sub(r"<[^>]+>", " ", summary)
-                summary = re.sub(r"\s+", " ", summary).strip()
+            summary = entry.get("summary", entry.get("description", "")).strip()
+            summary = re.sub(r"<[^>]+>", " ", summary)
+            summary = re.sub(r"\s+", " ", summary).strip()
 
-                articles.append(
-                    {
-                        "id": article_id,
-                        "title": title,
-                        "link": link,
-                        "summary": summary[:1000],
-                        "published": pub_date,
-                        "source": source_name,
-                        "source_url": url,
-                        "image_url": _rss_image(entry),
-                    }
-                )
-
-        except Exception as e:
-            logger.error(f"Failed to fetch feed {url}: {e}")
+            articles.append(
+                {
+                    "id": article_id,
+                    "title": title,
+                    "link": link,
+                    "summary": summary[:1000],
+                    "published": pub_date,
+                    "source": source_name,
+                    "source_url": url,
+                    "image_url": _rss_image(entry),
+                }
+            )
 
     logger.info(f"Total articles fetched (last {FETCH_HOURS}h): {len(articles)}")
     return articles

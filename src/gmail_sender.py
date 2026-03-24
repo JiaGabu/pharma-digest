@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+import socket
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -51,7 +52,12 @@ def get_credentials() -> Credentials:
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(30)
+            try:
+                creds.refresh(Request())
+            finally:
+                socket.setdefaulttimeout(old_timeout)
             logger.info("OAuth token refreshed successfully.")
         else:
             # Interactive browser flow — only works in a local environment.
@@ -79,5 +85,10 @@ def send_email(subject: str, html_body: str, recipient: str) -> None:
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(30)
+    try:
+        service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    finally:
+        socket.setdefaulttimeout(old_timeout)
     logger.info(f"Email sent to {recipient}: {subject}")

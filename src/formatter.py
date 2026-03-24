@@ -1,3 +1,4 @@
+import html
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -38,7 +39,7 @@ def format_email(articles: list[dict]) -> tuple[str, str]:
             image_url = a.get("image_url", "")
 
             image_html = (
-                f'<img src="{image_url}" class="article-image" alt="" />'
+                f'<img src="{html.escape(image_url)}" class="article-image" alt="" />'
                 if image_url else ""
             )
 
@@ -46,18 +47,18 @@ def format_email(articles: list[dict]) -> tuple[str, str]:
             <div class="article">
               {image_html}
               <div class="article-header">
-                <span class="article-title">{a['title']}</span>
+                <span class="article-title">{html.escape(a['title'])}</span>
               </div>
               <div class="meta">
-                <span class="source">{a['source']}</span>
+                <span class="source">{html.escape(a['source'])}</span>
                 <span class="dot-divider">·</span>
                 <span class="date">{pub_str}</span>
                 <span class="dot-divider">·</span>
                 <span class="score-badge">{score}</span>
               </div>
-              <div class="strategic-implication">{a.get('strategic_implication', '')}</div>
-              <div class="reasoning">{a.get('reasoning', '')}</div>
-              <a class="link" href="{a['link']}">Read full article →</a>
+              <div class="strategic-implication">{html.escape(a.get('strategic_implication', ''))}</div>
+              <div class="reasoning">{html.escape(a.get('reasoning', ''))}</div>
+              <a class="link" href="{html.escape(a['link'])}">Read full article →</a>
             </div>""")
 
         article_html = '<hr class="article-divider">'.join(article_html_parts)
@@ -115,14 +116,6 @@ def format_email(articles: list[dict]) -> tuple[str, str]:
       padding: 32px 36px 28px;
       position: relative;
       border-bottom: 3px solid var(--gold);
-    }}
-    .header-eyebrow {{
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 2.5px;
-      text-transform: uppercase;
-      color: var(--gold);
-      margin-bottom: 8px;
     }}
     .header h1 {{
       font-size: 26px;
