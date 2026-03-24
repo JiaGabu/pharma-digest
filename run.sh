@@ -5,10 +5,10 @@ set -e
 PROJECT_DIR="$HOME/pharma-digest"
 cd "$PROJECT_DIR"
 
-# Only run at or after 07:10 (prevents hourly fallback from firing before scheduled time)
+# Safety guard: only run at or after 06:50
 CURRENT_HOUR=$(date +%H)
 CURRENT_MIN=$(date +%M)
-if [ "$CURRENT_HOUR" -lt 7 ] || { [ "$CURRENT_HOUR" -eq 7 ] && [ "$CURRENT_MIN" -lt 10 ]; }; then
+if [ "$CURRENT_HOUR" -lt 6 ] || { [ "$CURRENT_HOUR" -eq 6 ] && [ "$CURRENT_MIN" -lt 50 ]; }; then
     exit 0
 fi
 

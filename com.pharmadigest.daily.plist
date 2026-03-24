@@ -12,21 +12,15 @@
     <string>/Users/jiagabu/pharma-digest/run.sh</string>
   </array>
 
-  <!-- Run daily at 07:10 Taipei time (macOS local time must be set to Asia/Taipei) -->
-  <!-- Also check every hour as fallback if Mac was asleep at 07:10 -->
+  <!-- Run daily at 06:50 Taipei time (macOS local time must be set to Asia/Taipei) -->
+  <!-- GitHub Actions fires at 07:00 as fallback if Mac is asleep/off -->
   <key>StartCalendarInterval</key>
-  <array>
-    <dict>
-      <key>Hour</key>
-      <integer>7</integer>
-      <key>Minute</key>
-      <integer>10</integer>
-    </dict>
-    <dict>
-      <key>Minute</key>
-      <integer>15</integer>
-    </dict>
-  </array>
+  <dict>
+    <key>Hour</key>
+    <integer>6</integer>
+    <key>Minute</key>
+    <integer>50</integer>
+  </dict>
 
   <key>WorkingDirectory</key>
   <string>/Users/jiagabu/pharma-digest</string>
