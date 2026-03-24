@@ -9,7 +9,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/jiagabu/pharma-digest/run.sh</string>
+    <string>/Users/jiagabu/Desktop/VS Code/claude-code/pharma-digest/run.sh</string>
   </array>
 
   <!-- Run daily at 06:50 Taipei time (macOS local time must be set to Asia/Taipei) -->
@@ -23,13 +23,13 @@
   </dict>
 
   <key>WorkingDirectory</key>
-  <string>/Users/jiagabu/pharma-digest</string>
+  <string>/Users/jiagabu/Desktop/VS Code/claude-code/pharma-digest</string>
 
   <key>StandardOutPath</key>
-  <string>/Users/jiagabu/pharma-digest/logs/launchd.log</string>
+  <string>/Users/jiagabu/Desktop/VS Code/claude-code/pharma-digest/logs/launchd.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/jiagabu/pharma-digest/logs/launchd_error.log</string>
+  <string>/Users/jiagabu/Desktop/VS Code/claude-code/pharma-digest/logs/launchd_error.log</string>
 
   <!-- Restart if it crashes -->
   <key>KeepAlive</key>

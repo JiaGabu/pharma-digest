@@ -2,7 +2,7 @@
 # Wrapper script for launchd to run the Pharma Digest
 set -e
 
-PROJECT_DIR="$HOME/pharma-digest"
+PROJECT_DIR="$HOME/Desktop/VS Code/claude-code/pharma-digest"
 cd "$PROJECT_DIR"
 
 # Safety guard: only run at or after 06:50
