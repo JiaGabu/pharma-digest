@@ -11,6 +11,7 @@ Both are required here: gmail for OAuth, drive.file for state persistence.
 import io
 import json
 import logging
+import socket
 from datetime import datetime, timezone, timedelta
 
 from googleapiclient.discovery import build
@@ -63,8 +64,13 @@ def _write_state(service, file_id: str | None, data: dict) -> None:
         logger.info(f"Created new Drive state file: {STATE_FILENAME}")
 
 
+_DRIVE_TIMEOUT = 30  # seconds for Drive API calls
+
+
 def already_sent_today() -> bool:
     today = datetime.now(TAIPEI).strftime("%Y-%m-%d")
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(_DRIVE_TIMEOUT)
     try:
         service = _get_drive_service()
         file_id = _find_state_file(service)
@@ -79,10 +85,14 @@ def already_sent_today() -> bool:
     except Exception as e:
         logger.warning(f"Drive state check failed (proceeding anyway): {e}")
         return False
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
 
 def mark_sent_today() -> None:
     today = datetime.now(TAIPEI).strftime("%Y-%m-%d")
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(_DRIVE_TIMEOUT)
     try:
         service = _get_drive_service()
         file_id = _find_state_file(service)
@@ -90,3 +100,5 @@ def mark_sent_today() -> None:
         logger.info(f"Drive state updated: last_sent_date={today}")
     except Exception as e:
         logger.warning(f"Failed to update Drive state (email was still sent): {e}")
+    finally:
+        socket.setdefaulttimeout(old_timeout)

@@ -22,7 +22,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return float(np.dot(a, b) / denom) if denom > 1e-10 else 0.0
 
 
-def _embed_articles(articles: list[dict], client: genai.Client) -> list[list[float]]:
+def _embed_articles(articles: list[dict], client: genai.Client) -> tuple[list[dict], list[list[float]]]:
     """Embed each article title+summary using gemini-embedding-001, in parallel with timeout."""
     texts = [f"{a['title']} {a.get('summary', '')}" for a in articles]
     results = [None] * len(texts)
@@ -33,7 +33,8 @@ def _embed_articles(articles: list[dict], client: genai.Client) -> list[list[flo
         return idx, response.embeddings[0].values
 
     timeout = max(120, len(texts) * 5)
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    executor = ThreadPoolExecutor(max_workers=5)
+    try:
         futures = {executor.submit(embed_one, (i, t)): i for i, t in enumerate(texts)}
         try:
             for future in as_completed(futures, timeout=timeout):
@@ -41,6 +42,8 @@ def _embed_articles(articles: list[dict], client: genai.Client) -> list[list[flo
                 results[idx] = vec
         except FuturesTimeoutError:
             logger.warning(f"Embedding timed out after {timeout}s; some articles may be skipped.")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     # Filter out articles whose embedding failed (None)
     valid = [(a, v) for a, v in zip(articles, results) if v is not None]
@@ -107,7 +110,7 @@ def _detect_multi_source_events(articles: list[dict], client: genai.Client) -> l
 
 def select_articles(scored: list[dict]) -> list[dict]:
     """
-    Select up to 9 articles according to quotas and deduplication rules:
+    Select up to 9 articles (3 Regulatory + 3 Clinical_RD + 2 Corporate_Financial + 1 Commercial_Market) according to quotas and deduplication rules:
     1. Embed all articles; group semantically identical articles across sources.
     2. For each group keep only the most info-rich article; exclude the rest.
     3. Groups covered by 3+ distinct sources force-include the best article.

@@ -109,7 +109,8 @@ def score_articles(articles: list[dict]) -> list[dict]:
 
     total_timeout = max(300, len(articles) * 15)
     scored_map = {}
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    executor = ThreadPoolExecutor(max_workers=3)
+    try:
         futures = {
             executor.submit(score_one, (i, a)): i
             for i, a in enumerate(articles)
@@ -137,6 +138,8 @@ def score_articles(articles: list[dict]) -> list[dict]:
                 f"Scoring timed out after {total_timeout}s; "
                 f"proceeding with {len(scored_map)} scored articles so far."
             )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     scored = [scored_map[i] for i in sorted(scored_map)]
     logger.info(f"Scored {len(scored)} eligible articles out of {len(articles)}")
