@@ -1,5 +1,5 @@
 feedparser
-google-genai>=1.0
+google-genai>=1.0,<2.0
 google-auth-oauthlib
 google-auth-httplib2
 google-api-python-client

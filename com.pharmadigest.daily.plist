@@ -12,14 +12,21 @@
     <string>/Users/jiagabu/pharma-digest/run.sh</string>
   </array>
 
-  <!-- Run daily at 07:00 Taipei time (macOS local time must be set to Asia/Taipei) -->
+  <!-- Run daily at 07:10 Taipei time (macOS local time must be set to Asia/Taipei) -->
+  <!-- Also check every hour as fallback if Mac was asleep at 07:10 -->
   <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>7</integer>
-    <key>Minute</key>
-    <integer>10</integer>
-  </dict>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>7</integer>
+      <key>Minute</key>
+      <integer>10</integer>
+    </dict>
+    <dict>
+      <key>Minute</key>
+      <integer>15</integer>
+    </dict>
+  </array>
 
   <key>WorkingDirectory</key>
   <string>/Users/jiagabu/pharma-digest</string>
