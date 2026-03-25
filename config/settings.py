@@ -1,7 +1,6 @@
 RSS_FEEDS = [
     "https://www.fiercepharma.com/rss/xml",
     "https://www.fiercebiotech.com/rss/xml",
-    "https://endpts.com/feed",
     "https://feeds.reuters.com/reuters/healthNews",
     "https://www.biospace.com/all-news.rss",
     "https://feeds.bbci.co.uk/news/topics/cg1lkvgedv8t/rss.xml",
