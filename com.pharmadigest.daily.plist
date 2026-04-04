@@ -8,8 +8,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>/Users/jiagabu/Desktop/VS Code/claude-code/pharma-digest/run.sh</string>
+    <string>/Users/jiagabu/run_pharmadigest.sh</string>
   </array>
 
   <!-- Run daily at 06:50 Taipei time (macOS local time must be set to Asia/Taipei) -->
@@ -23,7 +22,7 @@
   </dict>
 
   <key>WorkingDirectory</key>
-  <string>/Users/jiagabu/Desktop/VS Code/claude-code/pharma-digest</string>
+  <string>/Users/jiagabu</string>
 
   <key>StandardOutPath</key>
   <string>/Users/jiagabu/Desktop/VS Code/claude-code/pharma-digest/logs/launchd.log</string>
